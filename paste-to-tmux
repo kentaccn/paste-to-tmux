@@ -1,0 +1,285 @@
+#!/bin/bash
+# Send a clipboard image OR dragged-in file(s)/folder(s) from this laptop to a
+# tmux pane on any SSH host. The file lands on the remote and its absolute path
+# is typed straight into the active pane — e.g. into a running codex/claude CLI
+# prompt — so you never have to copy/paste a transfer code into a busy TUI.
+#
+# Usage:
+#   paste-to-tmux setup [host]            # guided first-time setup & checks (start here)
+#   paste-to-tmux <host>                  # clipboard image -> active pane;
+#                                         #   if clipboard has no image, prompts to drag file(s)
+#   paste-to-tmux <host> <target>         # explicit tmux target, e.g. mysession:0.0
+#   paste-to-tmux <host> [target] -f F... # send file/folder(s) F... directly (no clipboard, no prompt)
+#   paste-to-tmux <host> -l               # list attached sessions on <host> and exit
+#
+# <host> is any name ssh understands (an ~/.ssh/config Host, user@addr, etc.)
+set -e
+PNGPASTE="${PNGPASTE:-$(command -v pngpaste 2>/dev/null || echo /opt/homebrew/bin/pngpaste)}"
+
+# POSIX single-quote a string so it survives as one literal argument through a
+# remote shell (ssh) or when typed into a shell/agent prompt. Safe for spaces,
+# quotes, $, backticks, etc. Each ' becomes '\''.
+shq() {
+  local q=\'
+  local s=${1//$q/$q\\$q$q}
+  printf '%s' "$q$s$q"
+}
+
+# Capture a clipboard image to PNG file $1. Returns 0 only if a non-empty PNG
+# was written. Tries pngpaste first (fast), then falls back to macOS's built-in
+# osascript so it works on a stock Mac with no Homebrew.
+clip_to_png() {
+  local out="$1"
+  if [ -x "$PNGPASTE" ] || command -v pngpaste >/dev/null 2>&1; then
+    "$PNGPASTE" "$out" 2>/dev/null && [ -s "$out" ] && return 0
+  fi
+  if command -v osascript >/dev/null 2>&1; then
+    osascript - "$out" >/dev/null 2>&1 <<'OSA'
+on run argv
+  set outFile to (item 1 of argv)
+  try
+    set pngData to (the clipboard as «class PNGf»)
+  on error
+    return "NOIMG"
+  end try
+  set fh to open for access (POSIX file outFile) with write permission
+  set eof fh to 0
+  write pngData to fh
+  close access fh
+  return "OK"
+end run
+OSA
+    [ -s "$out" ] && return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Guided setup / diagnostics:  paste-to-tmux setup [host]
+# Walks a first-time user through local tools, SSH login, and tmux on the
+# remote, explains how to fix anything missing, and can create a one-word
+# shortcut for a host.
+# ---------------------------------------------------------------------------
+run_setup() {
+  local host="${1:-}"
+  echo "paste-to-tmux — setup"
+  echo "====================="
+
+  echo
+  echo "[1/4] Local tools"
+  for t in ssh scp; do
+    if command -v "$t" >/dev/null 2>&1; then echo "  [ok] $t"
+    else echo "  [!!] $t missing — install OpenSSH"; fi
+  done
+  if command -v pngpaste >/dev/null 2>&1 || [ -x "$PNGPASTE" ]; then
+    echo "  [ok] pngpaste — fast clipboard-image paste enabled"
+  elif command -v osascript >/dev/null 2>&1; then
+    echo "  [ok] clipboard images via built-in osascript (no Homebrew needed)"
+    echo "       (optional: 'brew install pngpaste' for a faster path)"
+  else
+    echo "  [--] no clipboard-image support (need pngpaste or osascript)"
+  fi
+
+  if [ -z "$host" ]; then
+    echo
+    echo "Which host do you send files to? An ~/.ssh/config alias, or user@address."
+    if [ -f "$HOME/.ssh/config" ]; then
+      local hl
+      hl=$(awk 'tolower($1)=="host"{for(i=2;i<=NF;i++) if($i !~ /[*?]/) print "      "$i}' "$HOME/.ssh/config" 2>/dev/null || true)
+      [ -n "$hl" ] && printf '  Hosts in your ~/.ssh/config:\n%s\n' "$hl"
+    fi
+    printf '  host> '
+    IFS= read -r host || true
+    [ -z "$host" ] && { echo "  No host entered. Stopping." >&2; return 1; }
+  fi
+  case "$host" in -*) echo "  Host can't start with '-' (it would be read as an ssh option)." >&2; return 1 ;; esac
+
+  echo
+  echo "[2/4] SSH login to '$host'"
+  if ssh -n -o BatchMode=yes -o ConnectTimeout=6 -- "$host" true 2>/dev/null; then
+    echo "  [ok] passwordless SSH works"
+  else
+    echo "  [!!] couldn't log in without a password."
+    echo "       paste-to-tmux opens several SSH/SCP connections per send, so"
+    echo "       key-based login is strongly recommended:"
+    echo "         ssh-copy-id $host"
+    echo "       then re-run:  paste-to-tmux setup $host"
+    echo "  (continuing — you may be prompted for a password below)"
+  fi
+
+  echo
+  echo "[3/4] tmux on the remote"
+  local tv
+  tv=$(ssh -n -o ConnectTimeout=8 -- "$host" 'command -v tmux >/dev/null 2>&1 && tmux -V' 2>/dev/null || true)
+  if [ -n "$tv" ]; then
+    echo "  [ok] $tv installed on $host"
+  else
+    echo "  [!!] tmux not found on $host. Install it there:"
+    echo "         Debian/Ubuntu:  sudo apt install tmux"
+    echo "         macOS:          brew install tmux"
+  fi
+
+  echo
+  echo "[4/4] Attached tmux session on the remote"
+  local panes
+  panes=$(ssh -n -o ConnectTimeout=8 -- "$host" "tmux list-panes -a -F '#{session_attached} #{session_name}:#{window_index}.#{pane_index}'" 2>/dev/null | awk '$1>0' || true)
+  if [ -n "$panes" ]; then
+    echo "  [ok] found attached pane(s):"
+    echo "$panes" | awk '{print "      "$2}'
+  else
+    echo "  [--] no attached tmux session on $host right now."
+    echo "       SSH in and start one:   tmux new -A -s main"
+    echo "       (the file path is typed into the active pane of that session.)"
+  fi
+
+  echo
+  echo "Everyday use:  paste-to-tmux $host"
+  echo "               (sends the clipboard image, or prompts you to drag a file)"
+
+  echo
+  printf 'Make a one-word shortcut for this host? Enter a name (blank to skip): '
+  local name selfpath bindir
+  IFS= read -r name || true
+  case "$name" in
+    "") ;;
+    *[!A-Za-z0-9._-]*) echo "  Invalid name (use letters, digits, . _ - only). Skipped." >&2; name="" ;;
+  esac
+  if [ -n "$name" ]; then
+    selfpath="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    bindir="$(dirname "$selfpath")"
+    if printf '#!/bin/bash\nexec %s %s "$@"\n' "$(shq "$selfpath")" "$(shq "$host")" > "$bindir/$name" 2>/dev/null \
+       && chmod +x "$bindir/$name" 2>/dev/null; then
+      echo "  Created '$name'  ->  paste-to-tmux $host   (in $bindir)"
+    else
+      echo "  Couldn't write to $bindir. Create the shortcut somewhere on your PATH instead."
+    fi
+  fi
+  echo
+  echo "Done."
+}
+
+case "${1:-}" in
+  setup|doctor) shift; run_setup "$@"; exit $? ;;
+esac
+
+HOST="$1"
+if [ -z "$HOST" ]; then
+  cat >&2 <<'EOF'
+Usage:
+  paste-to-tmux setup [host]             First-time setup & checks (start here)
+  paste-to-tmux <host>                   Clipboard image -> active pane; else drag a file
+  paste-to-tmux <host> <target>          Explicit tmux target (e.g. mysession:0.0)
+  paste-to-tmux <host> <target> F...     Send file(s)/folder(s) to that target
+  paste-to-tmux <host> [target] -f F...  Send specific file(s)/folder(s)
+  paste-to-tmux <host> -l                List attached panes on <host>
+EOF
+  exit 2
+fi
+# Refuse a host that starts with '-': ssh would parse it as an option
+# (e.g. -oProxyCommand=...), which is local command execution.
+case "$HOST" in -*) echo "Refusing host '$HOST' (leading '-' would be read as an ssh option)." >&2; exit 2 ;; esac
+shift
+
+# --- parse remaining args: optional target, -l (list), -f file... ---
+MODE="auto"        # auto = clipboard image, else prompt for dragged files
+TARGET=""
+FILES=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -l|--list) MODE="list" ;;
+    -f|--file)
+      MODE="file"; shift
+      while [ $# -gt 0 ]; do FILES+=("$1"); shift; done
+      break ;;
+    -*) echo "Unknown option: $1" >&2; exit 2 ;;
+    *)
+      # First bare arg is the tmux target; any further bare args are files
+      # to send (so `<host> <target> file1 file2 ...` works without -f).
+      if [ -z "$TARGET" ]; then TARGET="$1"
+      else MODE="file"; FILES+=("$1"); fi ;;
+  esac
+  shift
+done
+
+if [ "$MODE" = "list" ]; then
+  ssh -- "$HOST" "tmux list-panes -a -F '#{session_attached} #{session_name}:#{window_index}.#{pane_index}  #{window_name}  #{pane_current_command}  #{?pane_active,ACTIVE,}'" | awk '$1>0'
+  exit 0
+fi
+
+# --- resolve the tmux target (most-recently-active attached pane if not given) ---
+if [ -z "$TARGET" ]; then
+  TARGET=$(ssh -- "$HOST" "tmux list-panes -a -F '#{session_attached} #{session_activity} #{?pane_active,1,0} #{session_name}:#{window_index}.#{pane_index}'" \
+    | awk '$1>0 && $3==1' | sort -k2,2 -nr | head -1 | awk '{print $4}')
+  if [ -z "$TARGET" ]; then echo "No attached tmux pane found on $HOST. Use -l to list." >&2; exit 1; fi
+fi
+
+# send_files <local-path>...
+# Copies each path (file via scp, dir via scp -r) into a timestamped folder on
+# the remote, then types the absolute remote path(s) into the tmux target pane.
+send_files() {
+  local dest base nf=0 nd=0
+  local remote_paths=() typed=""
+  local t0 dt sz total_start total_dt
+  # Create a private (0700), collision-proof cache dir on the remote and prune
+  # folders older than 7 days, in one round-trip. mktemp -d + umask 077 avoids
+  # the same-second collisions and predictable, world-readable paths a bare
+  # timestamp dir would leave. dest is an absolute remote path.
+  dest=$(ssh -- "$HOST" 'set -e; d="$HOME/.cache/tmux-paste"; mkdir -p "$d"; chmod 700 "$d" 2>/dev/null || true; find "$d" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true; umask 077; printf %s "$(mktemp -d "$d/$(date +%Y%m%d_%H%M%S).XXXXXX")"')
+  [ -n "$dest" ] || { echo "Failed to create remote cache dir on $HOST" >&2; exit 1; }
+  total_start=$SECONDS
+  for p in "$@"; do
+    if [ ! -e "$p" ]; then echo "skip (not found): $p" >&2; continue; fi
+    base=$(basename "$p")
+    # Reject control chars (newlines, escapes) in the name: send-keys -l would
+    # type them literally into the pane and could submit or corrupt the input.
+    case "$base" in *[[:cntrl:]]*) echo "skip (control chars in name): $p" >&2; continue ;; esac
+    sz=$(du -sh "$p" 2>/dev/null | cut -f1)
+    printf '↑ %s (%s) -> %s ...\n' "$base" "${sz:-?}" "$HOST" >&2
+    t0=$SECONDS
+    # scp resolves the path at copy time; the checks above are a convenience,
+    # not a security gate. No -q: scp prints its native progress meter.
+    if [ -d "$p" ]; then
+      scp -r -- "$p" "$HOST:$dest/" && nd=$((nd+1)) || { echo "scp failed: $p" >&2; continue; }
+    else
+      scp -- "$p" "$HOST:$dest/" && nf=$((nf+1)) || { echo "scp failed: $p" >&2; continue; }
+    fi
+    dt=$((SECONDS - t0))
+    printf '  ✓ %s in %ds\n' "$base" "$dt" >&2
+    remote_paths+=("$dest/$base")
+  done
+  if [ ${#remote_paths[@]} -eq 0 ]; then echo "Nothing was sent." >&2; exit 1; fi
+  total_dt=$((SECONDS - total_start))
+  # Each path is single-quoted (shq) so it appears in the pane as a usable
+  # quoted argument. The whole command, plus TARGET, is shq'd again so the
+  # remote shell receives literals — no filename can inject remote commands.
+  for rp in "${remote_paths[@]}"; do typed+="$(shq "$rp") "; done
+  typed="${typed% }"
+  ssh -- "$HOST" "tmux send-keys -l -t $(shq "$TARGET") -- $(shq "$typed")"
+  echo "Sent ${#remote_paths[@]} item(s) ($nf file(s), $nd folder(s)) in ${total_dt}s -> $HOST tmux $TARGET"
+}
+
+if [ "$MODE" = "file" ]; then
+  [ ${#FILES[@]} -eq 0 ] && { echo "No files given after -f." >&2; exit 2; }
+  send_files "${FILES[@]}"
+  exit 0
+fi
+
+# --- auto mode: clipboard image first, else interactive drag-and-drop prompt ---
+TMPDIR_PASTE=$(mktemp -d "${TMPDIR:-/tmp}/paste-to-tmux.XXXXXX")
+trap 'rm -rf "$TMPDIR_PASTE"' EXIT
+IMG="$TMPDIR_PASTE/image_$(date +%Y%m%d_%H%M%S).png"
+if clip_to_png "$IMG"; then
+  send_files "$IMG"
+  exit 0
+fi
+
+echo "No image in clipboard. Drag file(s)/folder(s) here, then press Enter:" >&2
+printf '> ' >&2
+IFS= read -r LINE || true
+[ -z "$LINE" ] && { echo "Nothing entered." >&2; exit 1; }
+# Parse the dragged line: terminals insert backslash-escaped or quoted paths.
+# xargs respects shell quoting/escaping and splits into one path per line.
+while IFS= read -r p; do [ -n "$p" ] && FILES+=("$p"); done \
+  < <(printf '%s\n' "$LINE" | xargs -n1 printf '%s\n' 2>/dev/null)
+[ ${#FILES[@]} -eq 0 ] && { echo "Could not parse any path from input." >&2; exit 1; }
+send_files "${FILES[@]}"

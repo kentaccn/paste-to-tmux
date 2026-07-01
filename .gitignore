@@ -1,0 +1,16 @@
+# runtime log from the optional install-hosting HTTP server
+server.log
+
+# backups created by install.sh
+*.bak.*
+
+# coding-agent session context (auto-generated)
+AGENTS.md
+
+# demo GIF build sources — the GIF itself (docs/demo.gif) is tracked; these are
+# kept locally and regenerate it with `vhs docs/demo.tape`
+docs/demo.tape
+docs/agent-pane.sh
+docs/sender-pane.sh
+docs/demo.tmux.conf
+docs/RECORDING.md
