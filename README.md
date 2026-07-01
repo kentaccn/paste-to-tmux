@@ -18,10 +18,19 @@ No image in clipboard. Drag file(s)/folder(s) here, then press Enter:
 > ~/Desktop/error.png
 ↑ error.png (84K) -> mac-mini ...
   ✓ error.png in 1s
-Sent 1 item(s) in 1s -> mac-mini tmux claude:0.0
+Sent 1 item(s) (1 file(s), 0 folder(s)) in 1s -> mac-mini tmux claude:0.0
+
+# ↳ and it's now typed into the claude pane on mac-mini, ready to send:
+'/home/me/.cache/tmux-paste/20260702_041500/error.png'
 ```
 
 It `scp`s the file over and **types the absolute remote path straight into the agent's prompt** via `tmux send-keys` — landing in the input line, ready to send, even while a full-screen program owns the pane. No transfer codes. No hand-typed paths. Nothing to install on the remote.
+
+## Or just paste an image
+
+Got an image on your clipboard — a `⌘⌃⇧4` screenshot, or one from your iPhone via Apple's [Universal Clipboard](https://support.apple.com/guide/mac-help/mchl70368996/mac)? Skip the drag. `paste-to-tmux <host>` grabs the clipboard image and sends it straight to the agent:
+
+![Paste a screenshot — or an image from your iPhone via Universal Clipboard — into the remote agent](docs/demo-clip.gif)
 
 ## Works over mosh, too
 

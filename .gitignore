@@ -1,3 +1,6 @@
+# macOS cruft
+.DS_Store
+
 # runtime log from the optional install-hosting HTTP server
 server.log
 
@@ -10,7 +13,9 @@ AGENTS.md
 # demo GIF build sources — the GIF itself (docs/demo.gif) is tracked; these are
 # kept locally and regenerate it with `vhs docs/demo.tape`
 docs/demo.tape
+docs/demo-clip.tape
 docs/agent-pane.sh
 docs/sender-pane.sh
+docs/sender-pane-clip.sh
 docs/demo.tmux.conf
 docs/RECORDING.md
