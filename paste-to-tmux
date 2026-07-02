@@ -252,8 +252,9 @@ send_files() {
   # Each path is single-quoted (shq) so it appears in the pane as a usable
   # quoted argument. The whole command, plus TARGET, is shq'd again so the
   # remote shell receives literals — no filename can inject remote commands.
+  # The trailing space is kept so back-to-back sends compose as 'a' 'b'
+  # in the pane instead of butting together as 'a''b'.
   for rp in "${remote_paths[@]}"; do typed+="$(shq "$rp") "; done
-  typed="${typed% }"
   ssh -- "$HOST" "tmux send-keys -l -t $(shq "$TARGET") -- $(shq "$typed")"
   echo "Sent ${#remote_paths[@]} item(s) ($nf file(s), $nd folder(s)) in ${total_dt}s -> $HOST tmux $TARGET"
 }
