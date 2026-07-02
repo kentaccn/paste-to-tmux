@@ -282,5 +282,17 @@ IFS= read -r LINE || true
 # xargs respects shell quoting/escaping and splits into one path per line.
 while IFS= read -r p; do [ -n "$p" ] && FILES+=("$p"); done \
   < <(printf '%s\n' "$LINE" | xargs -n1 printf '%s\n' 2>/dev/null)
+# Some terminals insert the dragged path raw — no quotes, no escaping — so a
+# name with spaces word-splits above into fragments that don't exist. If the
+# whole line (minus surrounding whitespace) names a real path, prefer it over
+# a parse that produced nothing or nonexistent fragments.
+RAW="${LINE#"${LINE%%[![:space:]]*}"}"
+RAW="${RAW%"${RAW##*[![:space:]]}"}"
+if [ -e "$RAW" ]; then
+  PARSE_OK=1
+  [ ${#FILES[@]} -gt 0 ] || PARSE_OK=0
+  for p in "${FILES[@]}"; do [ -e "$p" ] || { PARSE_OK=0; break; }; done
+  [ "$PARSE_OK" = 1 ] || FILES=("$RAW")
+fi
 [ ${#FILES[@]} -eq 0 ] && { echo "Could not parse any path from input." >&2; exit 1; }
 send_files "${FILES[@]}"
