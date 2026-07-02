@@ -274,6 +274,32 @@ if clip_to_png "$IMG"; then
   exit 0
 fi
 
+# Greedily split a line of raw dropped paths that arrived with no separator
+# (or a single space) between them — "/a/one.md/a/two.txt" — into paths that
+# exist, longest match first. Prints one path per line; fails unless the
+# entire line is consumed, so a partial match never silently drops input.
+split_concat_paths() {
+  local rest="$1" prefix cand
+  [ -n "$rest" ] || return 1
+  while [ -n "$rest" ]; do
+    rest="${rest# }"
+    [ -n "$rest" ] || break
+    prefix="$rest"
+    while :; do
+      # A space right before the next '/' belongs to the separator, not the name.
+      cand="${prefix% }"
+      [ -n "$cand" ] && [ -e "$cand" ] && break
+      case "$prefix" in
+        */*) prefix="${prefix%/*}" ;;
+        *) return 1 ;;
+      esac
+    done
+    printf '%s\n' "$cand"
+    rest="${rest#"$prefix"}"
+  done
+  return 0
+}
+
 echo "No image in clipboard. Drag file(s)/folder(s) here, then press Enter:" >&2
 printf '> ' >&2
 IFS= read -r LINE || true
@@ -282,17 +308,23 @@ IFS= read -r LINE || true
 # xargs respects shell quoting/escaping and splits into one path per line.
 while IFS= read -r p; do [ -n "$p" ] && FILES+=("$p"); done \
   < <(printf '%s\n' "$LINE" | xargs -n1 printf '%s\n' 2>/dev/null)
-# Some terminals insert the dragged path raw — no quotes, no escaping — so a
-# name with spaces word-splits above into fragments that don't exist. If the
-# whole line (minus surrounding whitespace) names a real path, prefer it over
-# a parse that produced nothing or nonexistent fragments.
+# Some terminals insert dragged paths raw — no quotes, no escaping — so a name
+# with spaces word-splits above into fragments that don't exist, and dropping
+# several files one after another can even concatenate them with no separator
+# at all ("/a/one.md/a/two.txt"). If the parse produced nothing usable, prefer
+# the whole line as a single path, else an existence-based split of the line.
 RAW="${LINE#"${LINE%%[![:space:]]*}"}"
 RAW="${RAW%"${RAW##*[![:space:]]}"}"
-if [ -e "$RAW" ]; then
-  PARSE_OK=1
-  [ ${#FILES[@]} -gt 0 ] || PARSE_OK=0
-  for p in "${FILES[@]}"; do [ -e "$p" ] || { PARSE_OK=0; break; }; done
-  [ "$PARSE_OK" = 1 ] || FILES=("$RAW")
+PARSE_OK=1
+[ ${#FILES[@]} -gt 0 ] || PARSE_OK=0
+for p in "${FILES[@]}"; do [ -e "$p" ] || { PARSE_OK=0; break; }; done
+if [ "$PARSE_OK" != 1 ]; then
+  if [ -e "$RAW" ]; then
+    FILES=("$RAW")
+  elif SPLIT=$(split_concat_paths "$RAW"); then
+    FILES=()
+    while IFS= read -r p; do [ -n "$p" ] && FILES+=("$p"); done <<<"$SPLIT"
+  fi
 fi
 [ ${#FILES[@]} -eq 0 ] && { echo "Could not parse any path from input." >&2; exit 1; }
 send_files "${FILES[@]}"
