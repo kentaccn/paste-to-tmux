@@ -252,8 +252,9 @@ send_files() {
   # Each path is single-quoted (shq) so it appears in the pane as a usable
   # quoted argument. The whole command, plus TARGET, is shq'd again so the
   # remote shell receives literals — no filename can inject remote commands.
+  # The trailing space is kept so back-to-back sends compose as 'a' 'b'
+  # in the pane instead of butting together as 'a''b'.
   for rp in "${remote_paths[@]}"; do typed+="$(shq "$rp") "; done
-  typed="${typed% }"
   ssh -- "$HOST" "tmux send-keys -l -t $(shq "$TARGET") -- $(shq "$typed")"
   echo "Sent ${#remote_paths[@]} item(s) ($nf file(s), $nd folder(s)) in ${total_dt}s -> $HOST tmux $TARGET"
 }
@@ -273,13 +274,89 @@ if clip_to_png "$IMG"; then
   exit 0
 fi
 
+# Greedily split a line of raw dropped paths that arrived with no separator
+# (or a single space) between them — "/a/one.md/a/two.txt" — into paths that
+# exist, longest match first. Prints one path per line; fails unless the
+# entire line is consumed, so a partial match never silently drops input.
+split_concat_paths() {
+  local rest="$1" prefix cand
+  [ -n "$rest" ] || return 1
+  while [ -n "$rest" ]; do
+    rest="${rest# }"
+    [ -n "$rest" ] || break
+    prefix="$rest"
+    while :; do
+      # A space right before the next '/' belongs to the separator, not the name.
+      cand="${prefix% }"
+      [ -n "$cand" ] && [ -e "$cand" ] && break
+      case "$prefix" in
+        */*) prefix="${prefix%/*}" ;;
+        *) return 1 ;;
+      esac
+    done
+    printf '%s\n' "$cand"
+    rest="${rest#"$prefix"}"
+  done
+  return 0
+}
+
+# Parse one dropped line into path(s) and append them to FILES. Terminals
+# insert backslash-escaped or quoted paths; xargs respects that and splits
+# into one path per line. Some terminals insert paths raw — no quotes, no
+# escaping — so a name with spaces word-splits into fragments that don't
+# exist, and dropping several files one after another can even concatenate
+# them with no separator at all ("/a/one.md/a/two.txt"). If the parse
+# produced nothing usable, prefer the whole line as a single path, else an
+# existence-based split of the line.
+parse_drop_line() {
+  local line="$1" raw ok p split
+  local parsed=()
+  while IFS= read -r p; do [ -n "$p" ] && parsed+=("$p"); done \
+    < <(printf '%s\n' "$line" | xargs -n1 printf '%s\n' 2>/dev/null)
+  raw="${line#"${line%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  ok=1
+  [ ${#parsed[@]} -gt 0 ] || ok=0
+  for p in "${parsed[@]}"; do [ -e "$p" ] || { ok=0; break; }; done
+  if [ "$ok" != 1 ]; then
+    if [ -e "$raw" ]; then
+      parsed=("$raw")
+    elif split=$(split_concat_paths "$raw"); then
+      parsed=()
+      while IFS= read -r p; do [ -n "$p" ] && parsed+=("$p"); done <<<"$split"
+    fi
+  fi
+  if [ ${#parsed[@]} -gt 0 ]; then FILES+=("${parsed[@]}"); fi
+  return 0
+}
+
 echo "No image in clipboard. Drag file(s)/folder(s) here, then press Enter:" >&2
 printf '> ' >&2
 IFS= read -r LINE || true
 [ -z "$LINE" ] && { echo "Nothing entered." >&2; exit 1; }
-# Parse the dragged line: terminals insert backslash-escaped or quoted paths.
-# xargs respects shell quoting/escaping and splits into one path per line.
-while IFS= read -r p; do [ -n "$p" ] && FILES+=("$p"); done \
-  < <(printf '%s\n' "$LINE" | xargs -n1 printf '%s\n' 2>/dev/null)
+# A multi-file drop arrives as several newline-separated paths in one burst.
+# The embedded newline ends the read above at the first path, and the rest
+# would leak to the user's shell — and run as commands — after we exit. The
+# last path has no terminating newline, so in canonical mode the tty never
+# hands it over: switch to non-canonical, where cat gets whatever bytes are
+# buffered right away and gives up after a quiet second.
+REST=""
+if [ -t 0 ]; then
+  STTY_SAVED=$(stty -g 2>/dev/null || true)
+  if [ -n "$STTY_SAVED" ]; then
+    trap 'stty "$STTY_SAVED" 2>/dev/null; rm -rf "$TMPDIR_PASTE"' EXIT
+    stty -icanon min 0 time 10
+    REST=$(cat 2>/dev/null || true)
+    stty "$STTY_SAVED"
+    trap 'rm -rf "$TMPDIR_PASTE"' EXIT
+  fi
+else
+  # Piped input: just take the rest, EOF is immediate.
+  REST=$(cat 2>/dev/null || true)
+fi
+DROPPED="$LINE"
+[ -n "$REST" ] && DROPPED="$DROPPED
+$REST"
+while IFS= read -r l; do [ -n "$l" ] && parse_drop_line "$l"; done <<<"$DROPPED"
 [ ${#FILES[@]} -eq 0 ] && { echo "Could not parse any path from input." >&2; exit 1; }
 send_files "${FILES[@]}"
