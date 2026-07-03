@@ -346,13 +346,18 @@ if [ -t 0 ]; then
   if [ -n "$STTY_SAVED" ]; then
     trap 'stty "$STTY_SAVED" 2>/dev/null; rm -rf "$TMPDIR_PASTE"' EXIT
     stty -icanon min 0 time 10
-    REST=$(cat 2>/dev/null || true)
+    # cat drains the whole tty buffer so nothing leaks to the shell; head -c
+    # caps what we keep in memory (1 MiB ≈ thousands of paths) so a giant
+    # paste can't grow the variable unbounded — the rest is read and discarded.
+    REST=$(cat 2>/dev/null | head -c 1048576 || true)
     stty "$STTY_SAVED"
     trap 'rm -rf "$TMPDIR_PASTE"' EXIT
   fi
 else
-  # Piped input: just take the rest, EOF is immediate.
-  REST=$(cat 2>/dev/null || true)
+  # Piped input: just take the rest, EOF is immediate. head -c caps the buffer
+  # so an endless pipe (e.g. `yes | paste-to-tmux host`) can't exhaust memory;
+  # head exits at the cap and SIGPIPEs the writer.
+  REST=$(cat 2>/dev/null | head -c 1048576 || true)
 fi
 DROPPED="$LINE"
 [ -n "$REST" ] && DROPPED="$DROPPED
