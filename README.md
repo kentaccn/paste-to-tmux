@@ -1,5 +1,7 @@
 # paste-to-tmux
 
+*macOS CLI · send clipboard screenshots & dragged files to a remote tmux pane over SSH/SCP · drop them straight into Claude Code, Codex, or aider.*
+
 **Drop a file from your laptop straight into a remote terminal — and into the AI coding agent running inside it.**
 
 ![paste-to-tmux demo](docs/demo.gif)
