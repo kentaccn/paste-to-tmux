@@ -1,3 +1,7 @@
+# private marketing drafts (LinkedIn / Reddit posts) — kept in the repo dir
+# for convenience but never published
+marketing/
+
 # macOS cruft
 .DS_Store
 
