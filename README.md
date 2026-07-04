@@ -1,6 +1,6 @@
 # paste-to-tmux
 
-*macOS CLI · send clipboard screenshots & dragged files to a remote tmux pane over SSH/SCP · drop them straight into Claude Code, Codex, or aider.*
+*A CLI for macOS and Linux · send clipboard screenshots & dragged files to a remote tmux pane over SSH/SCP · drop them straight into Claude Code, Codex, or aider.*
 
 **Drop a file from your laptop straight into a remote terminal — and into the AI coding agent running inside it.**
 
@@ -30,7 +30,7 @@ It `scp`s the file over and **types the absolute remote path straight into the a
 
 ## Or just paste an image
 
-Got an image on your clipboard — a `⌘⌃⇧4` screenshot, or one from your iPhone via Apple's [Universal Clipboard](https://support.apple.com/guide/mac-help/mchl70368996/mac)? Skip the drag. `paste-to-tmux <host>` grabs the clipboard image and sends it straight to the agent:
+Got an image on your clipboard — a `⌘⌃⇧4` screenshot on a Mac, one from your iPhone via Apple's [Universal Clipboard](https://support.apple.com/guide/mac-help/mchl70368996/mac), or anything on your Wayland/X11 clipboard on Linux? Skip the drag. `paste-to-tmux <host>` grabs the clipboard image and sends it straight to the agent:
 
 ![Paste a screenshot — or an image from your iPhone via Universal Clipboard — into the remote agent](docs/demo-clip.gif)
 
@@ -45,9 +45,9 @@ Got an image on your clipboard — a `⌘⌃⇧4` screenshot, or one from your i
 brew install --HEAD https://raw.githubusercontent.com/kentaccn/paste-to-tmux/main/Formula/paste-to-tmux.rb
 ```
 
-Or from a clone: `git clone https://github.com/kentaccn/paste-to-tmux && cd paste-to-tmux && ./install.sh`
+Or from a clone (the path to use on Linux — `brew` above is the macOS shortcut): `git clone https://github.com/kentaccn/paste-to-tmux && cd paste-to-tmux && ./install.sh`
 
-You install **one tool, in one place** — your laptop. The remote needs only an SSH server and `tmux`, which you already have if you SSH in and work in tmux. `pngpaste` is optional (`brew install pngpaste`) for a faster clipboard-image path; without it, macOS's built-in `osascript` is used.
+You install **one tool, in one place** — your laptop. The remote needs only an SSH server and `tmux`, which you already have if you SSH in and work in tmux. For the clipboard-image path: on macOS, `pngpaste` is optional (`brew install pngpaste`) for a faster grab, and without it the built-in `osascript` handles it; on Linux it uses `wl-paste` (Wayland) or `xclip` (X11), so install whichever your session runs. Dragging files works everywhere with no extra tools.
 
 ## Usage
 
