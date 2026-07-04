@@ -26,8 +26,9 @@ shq() {
 }
 
 # Capture a clipboard image to PNG file $1. Returns 0 only if a non-empty PNG
-# was written. Tries pngpaste first (fast), then falls back to macOS's built-in
-# osascript so it works on a stock Mac with no Homebrew.
+# was written. Tries pngpaste first (fast), then macOS's built-in osascript, then
+# Linux clipboards: wl-paste on Wayland and xclip on X11. Whichever the machine
+# has decides how the image comes off the clipboard.
 clip_to_png() {
   local out="$1"
   if [ -x "$PNGPASTE" ] || command -v pngpaste >/dev/null 2>&1; then
@@ -50,6 +51,19 @@ on run argv
 end run
 OSA
     [ -s "$out" ] && return 0
+  fi
+  # Linux, Wayland: only pull the image if the clipboard actually offers a PNG,
+  # so a text clipboard doesn't write junk or make wl-paste hang.
+  if command -v wl-paste >/dev/null 2>&1; then
+    if wl-paste --list-types 2>/dev/null | grep -qi '^image/png'; then
+      wl-paste --type image/png >"$out" 2>/dev/null && [ -s "$out" ] && return 0
+    fi
+  fi
+  # Linux, X11: same guard — check the TARGETS list before asking for image/png.
+  if command -v xclip >/dev/null 2>&1; then
+    if xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -qi '^image/png'; then
+      xclip -selection clipboard -t image/png -o >"$out" 2>/dev/null && [ -s "$out" ] && return 0
+    fi
   fi
   return 1
 }
@@ -76,8 +90,13 @@ run_setup() {
   elif command -v osascript >/dev/null 2>&1; then
     echo "  [ok] clipboard images via built-in osascript (no Homebrew needed)"
     echo "       (optional: 'brew install pngpaste' for a faster path)"
+  elif command -v wl-paste >/dev/null 2>&1; then
+    echo "  [ok] clipboard images via wl-paste (Wayland)"
+  elif command -v xclip >/dev/null 2>&1; then
+    echo "  [ok] clipboard images via xclip (X11)"
   else
-    echo "  [--] no clipboard-image support (need pngpaste or osascript)"
+    echo "  [--] no clipboard-image support"
+    echo "       (macOS: pngpaste or osascript; Linux: wl-clipboard or xclip)"
   fi
 
   if [ -z "$host" ]; then
